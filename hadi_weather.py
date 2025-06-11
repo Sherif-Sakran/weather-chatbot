@@ -46,7 +46,7 @@ if input_text:
     st.session_state.conversation_history.append(("user", input_text))
     
     full_prompt = [
-        ("system","""You are an NLU module specialized in extracting information from the prompt. Extract the intent and slot values from user messages. There are some examples of user messages below. """ + examples + """\n\n You should return only the intent and slot values. You do NOT need to interpret the message or have a conversation about the weather. ONLY extract the intent and slot values. If there is a value missing, you should ask the user to provide it. When you have received the full information, return the intent and slot in JSON format. Do not ask about any further information. Your whole job is to EXTRACT the intent and slot values correctly and fully from the user.""")
+        ("system","""You are an NLU module specialized in extracting information from the prompt. Extract the intent and slot values from user messages. There are some examples of user messages below.\n""" + examples + """\n You should return only the intent and slot values. For GetWeather, you need two slots: city and date. For GetDeatils, you need one slot: request. Do not have a conversation about the weather. Extract the intent and slot values and ASK the user about any missing slot values (date or city). When you have received the full information, return the intent and slot in JSON format. Do not ask about any further information. Your whole job is to EXTRACT the intent and slot values correctly and fully from the user.""")
     ] + st.session_state.conversation_history[-4:]
 
     prompt = ChatPromptTemplate.from_messages(full_prompt)
