@@ -128,7 +128,7 @@ get_details_examples = get_details_examples.replace("{", "{{").replace("}", "}}"
 
 ## streamlit framework
 st.title('Weather Chatbot with LLAMA3.2')
-input_text=st.text_input("Chat with me!", placeholder="Ask me about the weather...")
+# input_text=st.text_input("Chat with me!", placeholder="Ask me about the weather...")
 
 # ChatOllama
 llm=ChatOllama(model="llama3.2")
@@ -144,6 +144,11 @@ if "last_response" not in st.session_state:
     st.session_state.last_response = ""
 
 def k_to_c(k): return round(k - 273.15, 1)
+
+
+
+# Ask for new input
+input_text = st.chat_input("Ask something...")
 
 if input_text:
     st.session_state.conversation_history.append(("user", input_text))
@@ -213,4 +218,10 @@ if input_text:
     escaped_result = result.replace("{", "{{").replace("}", "}}")
     st.session_state.conversation_history.append(("assistant", escaped_result))
        
-    st.write(result)
+    # with st.chat_message("assistant"):
+    #     st.markdown(result)
+
+# Display the full chat history
+for role, message in st.session_state.conversation_history:
+    with st.chat_message(role):
+        st.markdown(message)
