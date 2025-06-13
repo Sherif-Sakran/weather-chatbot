@@ -186,7 +186,7 @@ if input_text:
             - Humidity: {weather_data['main']['humidity']}%
             - Wind: {weather_data['wind']['speed']} m/s, direction {weather_data['wind']['deg']}°
 
-            Use this information to answer any further questions about the weather in {city} on {date}. DO NOT go outside of this context.
+            Use this information to answer any further questions about the weather in {city} on {date}. If the user asks about a different location or date, then follow their request.
             """
             st.session_state.weather_context = context_summary
         else:
@@ -194,26 +194,23 @@ if input_text:
                 result = f"I need to know the city for which you want the weather information. Please provide a city name."
             elif not date:
                 result = f"I need to know the date for which you want the weather information. Please provide a date."
-    elif intent == "GetDetails":
-        if st.session_state.weather_context:
-            followup_prompt = [
-            ("system", "You are a weather assistant. Use ONLY the weather context below to answer the user's question."),
-            ("system", st.session_state.weather_context),
-            ]
-            followup_prompt += st.session_state.conversation_history[-4:]
-            followup_prompt.append(("user", input_text))
-            followup_prompt = ChatPromptTemplate.from_messages(followup_prompt)
-            followup_chain = followup_prompt | llm | output_parser
-            result = followup_chain.invoke({})
-            for role, content in followup_prompt.messages:
-                print(f"@{role}@: {content}\n")      
+    elif "weather_context" in st.session_state and st.session_state.weather_context:
+        followup_prompt = [
+        ("system", "You are a weather assistant. Use ONLY the weather context below to answer the user's question."),
+        ("system", st.session_state.weather_context),
+        ]
+        followup_prompt += st.session_state.conversation_history[-4:]
+        followup_prompt.append(("user", input_text))
+        followup_prompt = ChatPromptTemplate.from_messages(followup_prompt)
+        followup_chain = followup_prompt | llm | output_parser
+        result = followup_chain.invoke({})
+        for role, content in followup_prompt.messages:
+            print(f"@{role}@: {content}\n")      
+        print(f'Follow-up result: {result}')
 
     else:
         result = "I couldn't understand your request. Please try again."
     escaped_result = result.replace("{", "{{").replace("}", "}}")
     st.session_state.conversation_history.append(("assistant", escaped_result))
-
-
-
-        
+       
     st.write(result)
