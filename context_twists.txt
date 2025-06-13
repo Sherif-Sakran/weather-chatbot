@@ -1,0 +1,11 @@
+Ok something interesting (and quite concerning) just happened. The flow of the program goes as follows: the use makes a prompt, the LLM checks if it is asking about weather (city and date) or not. 
+- If the user is asking about the weather, then it calls an API to get the weather, and finally we save the details so that the user can ask about it (like wind and humidity).
+- If the user is not asking about getting the weather, then they are either asking about details about the weather obtained in the previous step or they are prompting something else which is none of our interest.
+
+I'll try to explain this as clear as I can. Interestingly, to save the weather data received from the API, I try to make the LLM only use this context and not to make up anything (cuz they are brilliant in making up things. at least the simple one I am using for this project). As such, after providing the data as context, I added "Use this information to answer any further questions about the weather in {city} on {date}. DO NOT go outside of this context." 
+
+What it really followed was not expected. It really did not go outside of that context. It refused to answer any question about anything else other than the weather in that city and date (Glasgow and June 5th). Even when asking about Cairo, its response was: "I don't have information about the weather in Cairo on the second of February because we were previously discussing Glasgow, and I'm only aware of the context for that location.
+
+If you'd like to know the weather in a different location or on a specific day, please let me know, and I'll do my best to provide an answer."
+
+The problem kept persisting with each prompt. I am almost sure there can be ways to work around this. My point is that having this instruction from the beginning could completely change the intended behaviour of the system. Anyway, this is AI.
