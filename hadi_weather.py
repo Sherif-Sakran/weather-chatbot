@@ -47,8 +47,12 @@ def get_lat_lon(city):
 
 def get_weather(lat, lon, date):
     print(f"Fetching weather for coordinates: {lat}, {lon} on date: {date}")
+    if date.date() < datetime.today().date():
+        url = f"http://api.weatherapi.com/v1/history.json?key={API_KEY}&q={lat},{lon}&dt={date}"
+    else:
+        url = f"http://api.weatherapi.com/v1/forecast.json?key={API_KEY}&q={lat},{lon}&unixdt={date.timestamp()}"
+
     # url = f"http://api.weatherapi.com/v1/current.json?key={API_KEY}&q={city}&unixdt={date}"
-    url = f"http://api.weatherapi.com/v1/forecast.json?key={API_KEY}&q={lat},{lon}&unixdt={date}"
     response = requests.get(url)
     if response.status_code == 200:
         print("Weather data fetched successfully.")
@@ -198,13 +202,16 @@ if input_text:
             if not date:
                 print(f"Invalid date format: {date}. Please provide a valid date.")
                 result = "I need a valid date to provide the weather information. Please provide a valid date."
+
             else:
                 print(f"Parsed date: {date}")
                 lat, lon = get_lat_lon(city)
-                weather_data = get_weather(lat, lon, date.timestamp())
+                weather_data = get_weather(lat, lon, date)
                 print(f"Weather data: {weather_data}")
+                past_forecast = " (note that it is a weather in the past)" if date.date() < datetime.today().date() else ""
+
                 prompt = ChatPromptTemplate.from_messages([
-                    ("system", f"""You are a weather assistant. Write the weather forecast in summary. Here is the information: city: {city}, date: {date.strftime('%Y-%m-%d')}, max_temperature: {weather_data['forecast']['forecastday'][0]['day']['maxtemp_c']}°C, min_temperature: {weather_data['forecast']['forecastday'][0]['day']['mintemp_c']}°C, average_temperature: {weather_data['forecast']['forecastday'][0]['day']['avgtemp_c']}°C"""),
+                    ("system", f"""You are a weather assistant. Write the weather forecast in summary{past_forecast}. Here is the information: city: {city}, date: {date.strftime('%Y-%m-%d')}, max_temperature: {weather_data['forecast']['forecastday'][0]['day']['maxtemp_c']}°C, min_temperature: {weather_data['forecast']['forecastday'][0]['day']['mintemp_c']}°C, average_temperature: {weather_data['forecast']['forecastday'][0]['day']['avgtemp_c']}°C"""),
                     ("user", f"Summarize the weather forecast for {city} on {date.strftime('%Y-%m-%d')}."),
                     ("assistant", "The weather forecast is as follows:"),
                 ])
