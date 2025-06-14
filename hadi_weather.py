@@ -15,7 +15,7 @@ load_dotenv()
 os.environ["LANGSMITH_TRACING"]="true"
 os.environ["LANGCHAIN_API_KEY"]=os.getenv("LANGSMITH_API_KEY")
 
-API_KEY = os.getenv("OPENWEATHERMAP_API_KEY")  # store your key in .env
+API_KEY = os.getenv("FREEWEATHER_API_KEY")  # store your key in .env
 
 def get_lat_lon(city):
     url = f"https://nominatim.openstreetmap.org/search"
@@ -34,8 +34,19 @@ def get_lat_lon(city):
         return float(data[0]['lat']), float(data[0]['lon'])
     return None
 
-def get_weather(lat, lon):
-    url = f"https://api.openweathermap.org/data/2.5/weather?lat={lat}&lon={lon}&appid={API_KEY}"
+# def get_weather(lat, lon):
+#     url = f"https://api.openweathermap.org/data/2.5/weather?lat={lat}&lon={lon}&appid={API_KEY}"
+#     response = requests.get(url)
+#     if response.status_code == 200:
+#         print("Weather data fetched successfully.")
+#         return response.json()
+#     print("Error fetching weather data:", response.status_code, response.text)
+#     return response.text
+
+def get_weather(lat, lon, date):
+    print(f"Fetching weather for coordinates: {lat}, {lon} on date: {date}")
+    # url = f"http://api.weatherapi.com/v1/current.json?key={API_KEY}&q={city}&unixdt={date}"
+    url = f"http://api.weatherapi.com/v1/forecast.json?key={API_KEY}&q={lat},{lon}&unixdt={date}"
     response = requests.get(url)
     if response.status_code == 200:
         print("Weather data fetched successfully.")
@@ -53,9 +64,6 @@ def extract_json_from_text(text):
     return None
 
 def extract_info_from_response(text):
-    # pattern = r"- Intent:\s*(\w+)\s*- Slots:\s*\{[^}]*'date':\s*\['([^']+)'\],\s*'city':\s*\['([^']+)'\]\}"
-    pattern = r"\s*Intent:\s*(\w+)\s*Slots:\s*\{'city': \['(.*?)'\], 'date': \['(.*?)'\]\}"
-
     # Extract intent
     intent_match = re.search(r"Intent:\s*(\w+)", text)
     intent = intent_match.group(1) if intent_match else None
@@ -127,7 +135,11 @@ get_details_examples = get_details_examples.replace("{", "{{").replace("}", "}}"
 # print(examples[:150])
 
 ## streamlit framework
-st.title('Weather Chatbot with LLAMA3.2')
+st.set_page_config(page_title="Hadi Chatbot", page_icon="🌜")
+# st.set_page_config(page_title="Hadi Chatbot", page_icon=":robot_face:", layout="wide")
+
+# st.title('Hadi Chatbot')
+st.markdown("<h1 style='text-align: center;'>Hadi Chatbot</h1>", unsafe_allow_html=True)
 # input_text=st.text_input("Chat with me!", placeholder="Ask me about the weather...")
 
 # ChatOllama
@@ -143,18 +155,21 @@ if "conversation_history" not in st.session_state:
 if "last_response" not in st.session_state:
     st.session_state.last_response = ""
 
+if "weather_city_context" not in st.session_state:
+    st.session_state.weather_city_context = {"city": None, "date": None}
+
 def k_to_c(k): return round(k - 273.15, 1)
 
 
 
 # Ask for new input
-input_text = st.chat_input("Ask something...")
+input_text = st.chat_input("Ask me about the weather...")
 
 if input_text:
     st.session_state.conversation_history.append(("user", input_text))
     
     full_prompt = [
-        ("system","""You are an NLU module specialized in extracting information from the prompt. Your role is to extract the intent and slot values from the user messages. The intent and slots will be used to call an api for the weather to get the information. You should NOT answer the questions about weather yourself. Your role is only to extract the required information for the weather API. You should extract one of two intents:
+        ("system","""You are an NLU module specialized in extracting information from the prompt to call a weather forecast API. Your role is to extract the intent and slot values from the user messages. The intent and slots will be used to call an api for the weather to get the information. You should NOT answer the questions about weather yourself. Your role is only to extract the required information for the weather API. You should extract one of two intents:
          1) GetWeather: this intent has two slots: `city` (could be any city) and `date` (could be any date). When you have received the full information, return the intent and slot in JSON format. Do not ask about any further information. Your whole job is to EXTRACT the intent and slot values correctly and fully from the user. After that, there will be a call to the weather API to get the information using the `city` and `date` slots that you will be available for you for later interactions. Follow the following rules:
          - If the user does not provide a date, ask the user for the date. 
          - If the user does not provide a city, ask the user for the city. 
@@ -176,33 +191,44 @@ if input_text:
     context_summary = ""
     if intent == "GetWeather":
         if city and date:
-            print(f"Calling weather API for city: {city}, date: {date}")
+            print(f"Calling weather forecast API for city: {city}, date: {date}")
+            date = parser.parse(date)
             lat, lon = get_lat_lon(city)
-            weather_data = get_weather(lat, lon)
-            print(weather_data)
-            result = f"""The weather in {city}, {weather_data['sys']['country']} is {weather_data['weather'][0]['description']}
-            with a temperature of {weather_data['main']['temp'] - 273.15:.1f}°C."""
+            weather_data = get_weather(lat, lon, date.timestamp())
+            print(f"Weather data: {weather_data}")
+            prompt = ChatPromptTemplate.from_messages([
+                ("system", f"""You are a weather assistant. Write the weather forecast in summary. Here is the information: city: {city}, date: {date.strftime('%Y-%m-%d')}, max_temperature: {weather_data['forecast']['forecastday'][0]['day']['maxtemp_c']}°C, min_temperature: {weather_data['forecast']['forecastday'][0]['day']['mintemp_c']}°C, average_temperature: {weather_data['forecast']['forecastday'][0]['day']['avgtemp_c']}°C"""),
+                ("user", f"Summarize the weather forecast for {city} on {date.strftime('%Y-%m-%d')}."),
+                ("assistant", "The weather forecast is as follows:"),
+            ])
+            print(f"Prompt: {prompt}")
+            chain = prompt | llm | output_parser
+            # chain = prompt | llm
+            result = chain.invoke({})
+            print(f'Weather summary: {result}')
+            # result = f"""The weather in {city} is {weather_data['weather'][0]['description']}
+            # with a temperature of {weather_data['main']['temp'] - 273.15:.1f}°C."""
+
             context_summary = f"""
             Weather context for further GetDetails interactions for {city} on {date}:
-            - Description: clear sky
-            - Temperature: {k_to_c(weather_data['main']['temp'])}°C
-            - Feels like: {k_to_c(weather_data['main']['feels_like'])}°C
-            - Min/Max: {k_to_c(weather_data['main']['temp_min'])}°C / {k_to_c(weather_data['main']['temp_max'])}°C
-            - Humidity: {weather_data['main']['humidity']}%
-            - Wind: {weather_data['wind']['speed']} m/s, direction {weather_data['wind']['deg']}°
+            max_temperature: {weather_data['forecast']['forecastday'][0]['day']['maxtemp_c']}°C, min_temperature: {weather_data['forecast']['forecastday'][0]['day']['mintemp_c']}°C, average_temperature: {weather_data['forecast']['forecastday'][0]['day']['avgtemp_c']}°C, maxwind_mph: {weather_data['forecast']['forecastday'][0]['day']['maxwind_mph']} mph, totalprecip_mm: {weather_data['forecast']['forecastday'][0]['day']['totalprecip_mm']} mm, avgvis_km: {weather_data['forecast']['forecastday'][0]['day']['avgvis_km']} km, avghumidity: {weather_data['forecast']['forecastday'][0]['day']['avghumidity']}%, uv: {weather_data['forecast']['forecastday'][0]['day']['uv']}, sunrise: {weather_data['forecast']['forecastday'][0]['astro']['sunrise']}, sunset: {weather_data['forecast']['forecastday'][0]['astro']['sunset']}
 
             Use this information to answer any further questions about the weather in {city} on {date}. If the user asks about a different location or date, then follow their request.
             """
-            st.session_state.weather_context = context_summary
+            st.session_state.weather_context_details = context_summary
         else:
-            if not city:
+            if not city and date:
                 result = f"I need to know the city for which you want the weather information. Please provide a city name."
-            elif not date:
+                st.session_state.weather_city_context["date"] = date
+            elif not date and city:
                 result = f"I need to know the date for which you want the weather information. Please provide a date."
-    elif "weather_context" in st.session_state and st.session_state.weather_context:
+                st.session_state.weather_city_context["city"] = city
+    
+    elif "weather_context_details" in st.session_state and st.session_state.weather_context_details:
+        print("Using existing weather context for follow-up.")
         followup_prompt = [
         ("system", "You are a weather assistant. Use ONLY the weather context below to answer the user's question."),
-        ("system", st.session_state.weather_context),
+        ("system", st.session_state.weather_context_details),
         ]
         followup_prompt += st.session_state.conversation_history[-4:]
         followup_prompt.append(("user", input_text))
@@ -213,8 +239,8 @@ if input_text:
             print(f"@{role}@: {content}\n")      
         print(f'Follow-up result: {result}')
 
-    else:
-        result = "I couldn't understand your request. Please try again."
+    # else:
+    #     result = "I couldn't understand your request. Please try again."
     escaped_result = result.replace("{", "{{").replace("}", "}}")
     st.session_state.conversation_history.append(("assistant", escaped_result))
        
