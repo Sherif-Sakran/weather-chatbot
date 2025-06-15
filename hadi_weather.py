@@ -80,7 +80,7 @@ def extract_info_from_response(text):
 
     # Extract date
     date_match = re.search(r"'date':\s*\[\s*'([^']+)'\s*\]", text)
-    date = date_match.group(1) if date_match else None
+    date = date_match.group(1) if date_match else datetime.now()
 
     print(f"Intent: {intent}, City: {city}, Date: {date}")
     return intent, city, date
@@ -162,7 +162,7 @@ if "last_response" not in st.session_state:
     st.session_state.last_response = ""
 
 if "weather_city_context" not in st.session_state:
-    st.session_state.weather_city_context = {"city": None, "date": None}
+    st.session_state.weather_city_context = {"city": None, "date": datetime.now()}
 
 def k_to_c(k): return round(k - 273.15, 1)
 
@@ -176,9 +176,9 @@ if input_text:
     
     full_prompt = [
         ("system","""You are an NLU module specialized in extracting information from the prompt to call a weather forecast API. Your role is to extract the intent and slot values from the user messages. The intent and slots will be used to call an api for the weather to get the information. You should NOT answer the questions about weather yourself. Your role is only to extract the required information for the weather API. You should extract one of two intents:
-         1) GetWeather: This will be any question about the weather in any way. The user just provides both the city and date so that you can answer them. GetWeather has two slots: `city` (could be any city) and `date` (could be any date). When you have received the full information, return the intent and slot in JSON format. Do not ask about any further information. Your whole job is to EXTRACT the intent and slot values correctly and fully from the user. After that, there will be a call to the weather API to get the information using the `city` and `date` slots that you will be available for you for later interactions. Follow the following rules:
-         - If the user does not provide a date, ask the user for the date. 
-         - If the user does not provide a city, ask the user for the city. 
+         1) GetWeather: This will be any question about the weather in any way. The user just provides both the city and date so that you can answer them. GetWeather has two slots: `city` (could be any city) and `date` (could be any date). If the user does not provide a date, it is ok. When you have received the city, return the intent and slot in JSON format. Do not ask about any further information. Your whole job is to EXTRACT the intent and slot values correctly and fully from the user. After that, there will be a call to the weather API to get the information using the `city` and `date` (if provided) slots that you will be available for you for later interactions. Follow the following rules:
+         - If the user does not provide a date, no problem we assume it is today. 
+         - If the user does not provide a city, ASK the user for the city. 
          - Return the intent and slots in JSON format ONLY IF the user provides both slots. 
          - If the user does not provide any of the required slots, do not return any JSON yet. Instead, ask the user for ONLY the missing slot.
          Here is an example of a user message:""" + get_weather_examples + """
@@ -196,46 +196,40 @@ if input_text:
     print(f"Extracted intent: {intent}, city: {city}, date: {date}")
     context_summary = ""
     if intent == "GetWeather":
-        if city and date:
+        if city:
             print(f"Calling weather forecast API for city: {city}, date: {date}")
-            date = dateparser.parse(date)
-            if not date:
-                print(f"Invalid date format: {date}. Please provide a valid date.")
-                result = "I need a valid date to provide the weather information. Please provide a valid date."
+            if isinstance(date, str):
+                date = dateparser.parse(date)
+            print(f"Parsed date: {date}")
+            lat, lon = get_lat_lon(city)
+            weather_data = get_weather(lat, lon, date)
+            print(f"Weather data: {weather_data}")
+            past_forecast = " (note that it is a weather in the past)" if date.date() < datetime.today().date() else ""
 
-            else:
-                print(f"Parsed date: {date}")
-                lat, lon = get_lat_lon(city)
-                weather_data = get_weather(lat, lon, date)
-                print(f"Weather data: {weather_data}")
-                past_forecast = " (note that it is a weather in the past)" if date.date() < datetime.today().date() else ""
+            prompt = ChatPromptTemplate.from_messages([
+                ("system", f"""You are a weather assistant. Write the weather forecast in summary{past_forecast}. Here is the information: city: {city}, date: {date.strftime('%Y-%m-%d')}, max_temperature: {weather_data['forecast']['forecastday'][0]['day']['maxtemp_c']}°C, min_temperature: {weather_data['forecast']['forecastday'][0]['day']['mintemp_c']}°C, average_temperature: {weather_data['forecast']['forecastday'][0]['day']['avgtemp_c']}°C"""),
+                ("user", f"Summarize the weather forecast for {city} on {date.strftime('%Y-%m-%d')}."),
+                ("assistant", "The weather forecast is as follows:"),
+            ])
+            print(f"Prompt: {prompt}")
+            chain = prompt | llm | output_parser
+            # chain = prompt | llm
+            result = chain.invoke({})
+            print(f'Weather summary: {result}')
+            # result = f"""The weather in {city} is {weather_data['weather'][0]['description']}
+            # with a temperature of {weather_data['main']['temp'] - 273.15:.1f}°C."""
 
-                prompt = ChatPromptTemplate.from_messages([
-                    ("system", f"""You are a weather assistant. Write the weather forecast in summary{past_forecast}. Here is the information: city: {city}, date: {date.strftime('%Y-%m-%d')}, max_temperature: {weather_data['forecast']['forecastday'][0]['day']['maxtemp_c']}°C, min_temperature: {weather_data['forecast']['forecastday'][0]['day']['mintemp_c']}°C, average_temperature: {weather_data['forecast']['forecastday'][0]['day']['avgtemp_c']}°C"""),
-                    ("user", f"Summarize the weather forecast for {city} on {date.strftime('%Y-%m-%d')}."),
-                    ("assistant", "The weather forecast is as follows:"),
-                ])
-                print(f"Prompt: {prompt}")
-                chain = prompt | llm | output_parser
-                # chain = prompt | llm
-                result = chain.invoke({})
-                print(f'Weather summary: {result}')
-                # result = f"""The weather in {city} is {weather_data['weather'][0]['description']}
-                # with a temperature of {weather_data['main']['temp'] - 273.15:.1f}°C."""
+            context_summary = f"""
+            Weather context for further GetDetails interactions for {city} on {date}:
+            max_temperature: {weather_data['forecast']['forecastday'][0]['day']['maxtemp_c']}°C, min_temperature: {weather_data['forecast']['forecastday'][0]['day']['mintemp_c']}°C, average_temperature: {weather_data['forecast']['forecastday'][0]['day']['avgtemp_c']}°C, maxwind_mph: {weather_data['forecast']['forecastday'][0]['day']['maxwind_mph']} mph, totalprecip_mm: {weather_data['forecast']['forecastday'][0]['day']['totalprecip_mm']} mm, avgvis_km: {weather_data['forecast']['forecastday'][0]['day']['avgvis_km']} km, avghumidity: {weather_data['forecast']['forecastday'][0]['day']['avghumidity']}%, uv: {weather_data['forecast']['forecastday'][0]['day']['uv']}, sunrise: {weather_data['forecast']['forecastday'][0]['astro']['sunrise']}, sunset: {weather_data['forecast']['forecastday'][0]['astro']['sunset']}
 
-                context_summary = f"""
-                Weather context for further GetDetails interactions for {city} on {date}:
-                max_temperature: {weather_data['forecast']['forecastday'][0]['day']['maxtemp_c']}°C, min_temperature: {weather_data['forecast']['forecastday'][0]['day']['mintemp_c']}°C, average_temperature: {weather_data['forecast']['forecastday'][0]['day']['avgtemp_c']}°C, maxwind_mph: {weather_data['forecast']['forecastday'][0]['day']['maxwind_mph']} mph, totalprecip_mm: {weather_data['forecast']['forecastday'][0]['day']['totalprecip_mm']} mm, avgvis_km: {weather_data['forecast']['forecastday'][0]['day']['avgvis_km']} km, avghumidity: {weather_data['forecast']['forecastday'][0]['day']['avghumidity']}%, uv: {weather_data['forecast']['forecastday'][0]['day']['uv']}, sunrise: {weather_data['forecast']['forecastday'][0]['astro']['sunrise']}, sunset: {weather_data['forecast']['forecastday'][0]['astro']['sunset']}
-
-                Use this information to answer any further questions about the weather in {city} on {date}. If the user asks about a different location or date, then follow their request to get weather for the desired city and date.
-                """
-                st.session_state.weather_context_details = context_summary
+            Use this information to answer any further questions about the weather in {city} on {date}. If the user asks about a different location or date, then follow their request to get weather for the desired city and date.
+            """
+            st.session_state.weather_context_details = context_summary
             
         else:
             if not city and date:
-                result = f"I need to know the city for which you want the weather information. Please provide a city name."
-            elif not date and city:
-                result = f"I need to know the date for which you want the weather information. Please provide a date."
+                result = f"Please provide a city name."
         
         st.session_state.weather_city_context["date"] = date
         st.session_state.weather_city_context["city"] = city
