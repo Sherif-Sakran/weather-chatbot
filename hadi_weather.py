@@ -70,17 +70,35 @@ def extract_json_from_text(text):
     return None
 
 def extract_info_from_response(text):
-    # Extract intent
-    intent_match = re.search(r"Intent:\s*(\w+)", text)
-    intent = intent_match.group(1) if intent_match else None
+    intent = None
+    city = None
+    date = None
 
-    # Extract city
-    city_match = re.search(r"'city':\s*\[\s*'([^']+)'\s*\]", text)
-    city = city_match.group(1) if city_match else None
+    # If it's a dict already, use it directly
+    if isinstance(text, dict):
+        data = text
+    else:
+        # Try to parse as JSON
+        try:
+            data = json.loads(text)
+        except (json.JSONDecodeError, TypeError):
+            data = None
 
-    # Extract date
-    date_match = re.search(r"'date':\s*\[\s*'([^']+)'\s*\]", text)
-    date = date_match.group(1) if date_match else datetime.now()
+    if data:
+        intent = data.get("Intent")
+        slots = data.get("Slots", {})
+        city = slots.get("city", [None])[0]
+        date = slots.get("date", [None])[0] or datetime.now()
+    else:
+        # Fallback to regex-based parsing
+        intent_match = re.search(r"Intent:\s*['\"]?(\w+)['\"]?", text)
+        intent = intent_match.group(1) if intent_match else None
+
+        city_match = re.search(r"'?city'?:\s*\[\s*'([^']+)'\s*\]", text)
+        city = city_match.group(1) if city_match else None
+
+        date_match = re.search(r"'?date'?:\s*\[\s*'([^']+)'\s*\]", text)
+        date = date_match.group(1) if date_match else datetime.now()
 
     print(f"Intent: {intent}, City: {city}, Date: {date}")
     return intent, city, date
@@ -175,14 +193,28 @@ if input_text:
     st.session_state.conversation_history.append(("user", input_text))
     
     full_prompt = [
-        ("system","""You are an NLU module specialized in extracting weather query information from the prompt to call a weather forecast API. Your role is to extract the intent of the user whether making a weather-related query or not, and you also extract the slot values from the user messages. The intent and slots will be used to call an api for the weather to get the information. You should NOT answer the questions about weather yourself. Your role is only to extract the required information for the weather API. You should extract one of two intents:
-         1) GetWeather: This will be any question about the weather in any way. The user just provides both the city and date so that you can answer them. GetWeather has two slots: `city` (could be any city) and `date` (could be any date). If the user does not provide a date, it is ok. When you have received the city, return the intent and slot in JSON format. Do not ask about any further information. Your whole job is to EXTRACT the intent and slot values correctly and fully from the user. After that, there will be a call to the weather API to get the information using the `city` and `date` (if provided) slots that you will be available for you for later interactions. Follow the following rules:
-         - If the user does not provide a date, no problem we assume it is today. 
-         - If the user does not provide a city, ASK the user for the city. 
-         - Return the intent and slots in JSON format ONLY IF the user provides both slots. 
-         - If the user does not provide any of the required slots, do not return any JSON yet. Instead, ask the user for ONLY the missing slot.
-         Here is an example of a user message:""" + get_weather_examples + """
-         2) GetDetails: this intent has one slot: `request` (could only be 'humidity', 'wind'). This intent is used to get details from the weather api response that you will receive after the call of GetWeather api. Your only task is to know what detail the using is asking for. You should not ask the user for any further information. You should return the intent and slot in JSON format. Here is an example of a user message: """ + get_details_examples)
+        ("system","""You are an NLU module designed to extract intent and slot values from user messages for a weather forecast API. Your job is to extract structured data in JSON form. Do NOT answer weather questions yourself.
+        INTENTS:
+        1) GetWeather
+        - Triggered when user asks general weather questions.
+        - Slots:
+            - city (required)
+            - date (optional; assume today if missing)
+        - Rules:
+            - If city is missing, ask ONLY for the city.
+            - If city is provided, return intent and slots in JSON format.
+            - Do NOT ask for the date.
+            - If neither city nor date is present, ask ONLY for the city.
+        - Example user messages:""" + get_weather_examples + """
+         2) GetDetails
+        - Triggered when user asks for weather specifics.
+        - Slot:
+            - request (must be 'humidity' or 'wind')
+        - Rules:
+            - Identify and extract the request.
+            - Return intent and slot in JSON format.
+            - Do NOT ask follow-up questions.
+        - Example user messages: """ + get_details_examples)
     ] + st.session_state.conversation_history[-6:]
 
     prompt = ChatPromptTemplate.from_messages(full_prompt)
@@ -200,10 +232,10 @@ if input_text:
             print(f"Calling weather forecast API for city: {city}, date: {date}")
             if isinstance(date, str):
                 date = dateparser.parse(date)
-            print(f"Parsed date: {date}")
+            # print(f"Parsed date: {date}")
             lat, lon = get_lat_lon(city)
             weather_data = get_weather(lat, lon, date)
-            print(f"Weather data: {weather_data}")
+            print(f"API received data: {weather_data}")
             past_forecast = " (note that it is a weather in the past)" if date.date() < datetime.today().date() else ""
 
             prompt = ChatPromptTemplate.from_messages([
@@ -211,11 +243,11 @@ if input_text:
                 ("user", f"Summarize the weather forecast for {city} on {date.strftime('%Y-%m-%d')}."),
                 ("assistant", "The weather forecast is as follows:"),
             ])
-            print(f"Prompt: {prompt}")
             chain = prompt | llm | output_parser
             # chain = prompt | llm
             result = chain.invoke({})
-            print(f'Weather summary: {result}')
+            print(f"Prompt: {prompt}")
+            print(f'Prompt result: {result}')
             # result = f"""The weather in {city} is {weather_data['weather'][0]['description']}
             # with a temperature of {weather_data['main']['temp'] - 273.15:.1f}°C."""
 
@@ -237,7 +269,17 @@ if input_text:
     elif "weather_context_details" in st.session_state and st.session_state.weather_context_details:
         print("Using existing weather context for follow-up.")
         followup_prompt = [
-        ("system", f"""You are a weather assistant. Use the weather context below to answer the user's question about the weather of {st.session_state.weather_city_context['city']} in {st.session_state.weather_city_context['date']}. If the user asks about a different location or date, you must help them by extracting the desired city and date so that you can call the weather forecast API. In this case of calling the weather forecast API, ask the user to confirm their intention to get the weather for the specified city and date. If the user did not specify the city, assume it is the same city as the previous weather context. If the user did not specify the date, assume it is the same date as the previous weather context."""),
+        ("system", f"""You are a weather assistant. Use the current weather context to answer user questions.
+        Current context:
+        - City: {st.session_state.weather_city_context['city']}
+        - Date: {st.session_state.weather_city_context['date']}
+
+        Behavior rules:
+        - If the user asks about the same city and date, answer directly using the provided weather context.
+        - If the user changes only the **city**, use the new city and reuse the previous date.
+        - If the user changes only the **date**, use the new date and reuse the previous city.
+        - If the user changes **both** city and date, ask for confirmation before proceeding with an API call.
+        - If either city or date is missing, assume the missing value from the current context."""),
         ("system", st.session_state.weather_context_details),
         ]
         followup_prompt += st.session_state.conversation_history[-6:]
@@ -245,18 +287,16 @@ if input_text:
         followup_prompt = ChatPromptTemplate.from_messages(followup_prompt)
         followup_chain = followup_prompt | llm | output_parser
         result = followup_chain.invoke({})
-        for role, content in followup_prompt.messages:
-            print(f"@{role}@: {content}\n")      
-        print(f'Follow-up result: {result}')
+        # Mr. ChatGPT, please help here.
+        # If the result is about getting the weather for a different city (new query for GetWeather), then we need to go through the same process as the GetWeather intent
+        print(f'followup prompt: {followup_prompt}')
+        print(f'followup prmopt result: {result}')
 
     # else:
     #     result = "I couldn't understand your request. Please try again."
     escaped_result = result.replace("{", "{{").replace("}", "}}")
     st.session_state.conversation_history.append(("assistant", escaped_result))
        
-    # with st.chat_message("assistant"):
-    #     st.markdown(result)
-
 # Display the full chat history
 for role, message in st.session_state.conversation_history:
     with st.chat_message(role):
