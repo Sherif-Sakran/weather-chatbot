@@ -74,19 +74,68 @@ def extract_info_from_response(text):
     city = None
     date = None
 
-    # If already a dict, use it directly
-    if isinstance(text, dict):
-        data = text
-    else:
-        try:
-            data = json.loads(text)
-        except (json.JSONDecodeError, TypeError):
-            data = None
+    if isinstance(text, bytes):
+        text = text.decode()
+    text = str(text).strip()
 
-    if data:
-        intent = data.get("Intent") or data.get("intent")
-        city = data.get("city") or data.get("City")
-        date = data.get("date") or data.get("Date")
+    # Normalize None to null for valid JSON parsing
+    text = text.replace("None", "null")
+
+    # Remove markdown code blocks if present
+    text = re.sub(r"^```(?:json)?|```$", "", text, flags=re.MULTILINE).strip()
+
+    parsed_data = None
+
+    # Attempt 1: parse entire text as JSON
+    try:
+        parsed_data = json.loads(text)
+    except json.JSONDecodeError:
+        # Attempt 2: Extract substring from first { to last }
+        start = text.find('{')
+        end = text.rfind('}')
+        if start != -1 and end != -1 and end > start:
+            candidate = text[start:end+1]
+            try:
+                parsed_data = json.loads(candidate)
+            except json.JSONDecodeError:
+                parsed_data = None
+
+    def get_field(source, key):
+        if not isinstance(source, dict):
+            return None
+        for k, v in source.items():
+            if k.lower() == key.lower():
+                # Handle nested date dictionary
+                if isinstance(v, dict) and key.lower() == "date":
+                    month = v.get("month", "")
+                    day = v.get("day", "")
+                    date_str = f"{month} {day}".strip()
+                    return date_str if date_str else None
+                if v is None or (isinstance(v, str) and v.strip().lower() in ["none", "null"]):
+                    return None
+                return str(v).strip()
+        return None
+
+    if parsed_data:
+        intent = get_field(parsed_data, "intent")
+        city = get_field(parsed_data, "city")
+        date = get_field(parsed_data, "date")
+
+    # Fallback regex if fields missing
+    if not intent:
+        m = re.search(r'intent\s*[:=]\s*["\']?([\w\s]+)', text, re.IGNORECASE)
+        if m:
+            intent = m.group(1).strip()
+    if not city:
+        m = re.search(r'city\s*[:=]\s*["\']?([\w\s\-]+)', text, re.IGNORECASE)
+        if m:
+            val = m.group(1).strip()
+            city = None if val.lower() in ["none", "null"] else val
+    if not date:
+        m = re.search(r'date\s*[:=]\s*["\']?([A-Za-z0-9 ,\-]+)', text, re.IGNORECASE)
+        if m:
+            val = m.group(1).strip()
+            date = None if val.lower() in ["none", "null"] else val
 
     print(f"Intent: {intent}, City: {city}, Date: {date}")
     return intent, city, date
@@ -183,17 +232,19 @@ if input_text:
     full_prompt = [
         ("system","""You are an NLU module designed to understand the user's messages and classify their intent to one of the following: 
         1) Intent = GetWeather
-        - Triggered when user asks general weather questions. It does not have to mention the word 'weather'. As long as the user mentions a city, you should assume they want to know the weather. 
+        - Triggered when user asks any general **weather** questions. It does not have to mention the word 'weather'. As long as the user mentions a city, you should assume they want to know the weather. 
         - Rules:
             - Return `Intent`, `city`, and `date` in JSON format.
             - If the user does not provide a city, it is None.
             - If the user does not provide a date, it is None.
-        - Example user messages: `What about [city]?` or `How is it gonna be in Aswan?` or `What is the weather in [city] on March 14th?` or `What does the weather look like?` or `What is the weather like in [city]?` or `What is the weather in Aswan on March 14th?` or `How is it gonna be in [city]?` or `Check the weather in [city]` or `What do you think the weather will be like in [city]?` or `What will the weather be like in [city]?` `Could you check the weather in [city]?` 
+            - This is not about what you known about the weather. It is just about extracting the user's intent.
+        - Example user messages: `What about [city]?` or `How is it gonna be in Aswan?` or `What is the weather in [city] on March 14th?` or `What does the weather look like?` or `What is the weather like in [city]?` or `What is the weather in Aswan on March 14th?` or `How is it gonna be in [city]?` or `Check the weather in [city]` or `What do you think the weather will be like in [city]?` or `What will the weather be like in [city]?` `Could you check the weather in [city]?` or `How is the weather gonna be like?`
          2) Intent = GetDetails
         - Triggered when user asks for weather specifics like humidity or wind.
         - Rules:
             - Return `Intent` in JSON format.
             - Do NOT answer the user's question. Only return the intent and request in JSON format.
+            - Request can only be about humidity or wind.
             - Do NOT ask follow-up questions.
         - Example user messages: `What about the humidity?` or `How windy is it?` or `Any wind` or `Is it windy?`
         3) Intent = Other
@@ -210,6 +261,10 @@ if input_text:
     chain = prompt | llm | output_parser
     result = chain.invoke({})  # No extra vars needed if it's just conversation
 
+    # escaped_result = result.replace("{", "{{").replace("}", "}}")
+    # st.session_state.conversation_history.append(("assistant", escaped_result))
+
+
     print(f"\n\n\n\nMain Prompt: {prompt}")
     print(f'\n\nMain Prompt res: {result}')
 
@@ -218,10 +273,11 @@ if input_text:
     context_summary = ""
     if intent == "GetWeather":
         if city:
-            print(f"Calling weather forecast API for city: {city}, date: {date}")
+            if not date or date == "None" or date == "" or date == "null":
+                date = datetime.now()
             if isinstance(date, str):
                 date = dateparser.parse(date)
-            # print(f"Parsed date: {date}")
+            print(f"Calling weather forecast API for city: {city}, date: {date}")
             lat, lon = get_lat_lon(city)
             weather_data = get_weather(lat, lon, date)
             print(f"API received data: {weather_data}")
@@ -229,7 +285,7 @@ if input_text:
 
             prompt = ChatPromptTemplate.from_messages([
                 ("system", f"""You are a weather assistant. Write the weather forecast in summary{past_forecast}. Here is the information: city: {city}, date: {date.strftime('%Y-%m-%d')}, max_temperature: {weather_data['forecast']['forecastday'][0]['day']['maxtemp_c']}°C, min_temperature: {weather_data['forecast']['forecastday'][0]['day']['mintemp_c']}°C, average_temperature: {weather_data['forecast']['forecastday'][0]['day']['avgtemp_c']}°C"""),
-                ("user", f"Summarize the weather for {city} on {date.strftime('%Y-%m-%d')}."),
+                ("user", f"Tell me about the weather for {city} on {date.strftime('%Y-%m-%d')}."),
                 ("assistant", "The weather..."),
             ])
             chain = prompt | llm | output_parser
@@ -240,12 +296,8 @@ if input_text:
             # result = f"""The weather in {city} is {weather_data['weather'][0]['description']}
             # with a temperature of {weather_data['main']['temp'] - 273.15:.1f}°C."""
 
-            context_summary = f"""
-            Weather details for {city} on {date}:
-            max_temperature: {weather_data['forecast']['forecastday'][0]['day']['maxtemp_c']}°C, min_temperature: {weather_data['forecast']['forecastday'][0]['day']['mintemp_c']}°C, average_temperature: {weather_data['forecast']['forecastday'][0]['day']['avgtemp_c']}°C, maxwind_mph: {weather_data['forecast']['forecastday'][0]['day']['maxwind_mph']} mph, totalprecip_mm: {weather_data['forecast']['forecastday'][0]['day']['totalprecip_mm']} mm, avgvis_km: {weather_data['forecast']['forecastday'][0]['day']['avgvis_km']} km, avghumidity: {weather_data['forecast']['forecastday'][0]['day']['avghumidity']}%, uv: {weather_data['forecast']['forecastday'][0]['day']['uv']}, sunrise: {weather_data['forecast']['forecastday'][0]['astro']['sunrise']}, sunset: {weather_data['forecast']['forecastday'][0]['astro']['sunset']}
-
-            Use this information to answer any further questions about the weather in {city} on {date}. If the user asks about a different location or date, then follow their request to get weather for the desired city and date.
-            """
+            context_summary = f"""Today is {datetime.now().strftime('%Y-%m-%d')}) and these are the weather details obtained from the weatherapi.com API for {city} on {date}:
+            max_temperature: {weather_data['forecast']['forecastday'][0]['day']['maxtemp_c']}°C, min_temperature: {weather_data['forecast']['forecastday'][0]['day']['mintemp_c']}°C, average_temperature: {weather_data['forecast']['forecastday'][0]['day']['avgtemp_c']}°C, maxwind_mph: {weather_data['forecast']['forecastday'][0]['day']['maxwind_mph']} mph, totalprecip_mm: {weather_data['forecast']['forecastday'][0]['day']['totalprecip_mm']} mm, avgvis_km: {weather_data['forecast']['forecastday'][0]['day']['avgvis_km']} km, avghumidity: {weather_data['forecast']['forecastday'][0]['day']['avghumidity']}%, uv: {weather_data['forecast']['forecastday'][0]['day']['uv']}, sunrise: {weather_data['forecast']['forecastday'][0]['astro']['sunrise']}, sunset: {weather_data['forecast']['forecastday'][0]['astro']['sunset']}"""
             st.session_state.weather_context_details = context_summary
             
         else:
@@ -262,7 +314,7 @@ if input_text:
             ("system", f"""You are a weather assistant. Use the current weather context to answer user questions.
             Current context:
             {st.session_state.weather_context_details}"""),
-            ("system", st.session_state.weather_context_details),
+            ("system", "If the user asks about a different location or date, then tell them to confirm their request so that you call an API for the desired city and date."),
             ("user", input_text),
             ("assistant", "The weather details...")
             ]
